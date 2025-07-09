@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::NumberOrString;
+use crate::{NumberOrString, WorkspaceDiagnosticReportResult};
 
 pub type ProgressToken = NumberOrString;
 
@@ -14,7 +13,14 @@ pub struct ProgressParams {
     pub token: ProgressToken,
 
     /// The progress data.
-    pub value: Value,
+    pub value: ProgressParamsValue,
+}
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ProgressParamsValue {
+    WorkDone(WorkDoneProgress),
+    WorkspaceDiagnostic(WorkspaceDiagnosticReportResult),
 }
 
 /// The `window/workDoneProgress/create` request is sent
