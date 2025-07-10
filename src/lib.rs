@@ -21,7 +21,10 @@ extern crate bitflags;
 
 use std::{collections::HashMap, fmt::Debug};
 
-use serde::{de, de::Error as Error_, Deserialize, Serialize};
+use serde::{
+    de::{self, Error as Error_},
+    Deserialize, Deserializer, Serialize,
+};
 use serde_json::Value;
 pub use url::Url;
 
@@ -424,10 +427,24 @@ pub struct Diagnostic {
     pub data: Option<serde_json::Value>,
 }
 
+fn deserialize_optional_url<'de, D>(deserializer: D) -> Result<Option<Url>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt {
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => Url::parse(&s).map(Some).map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeDescription {
-    pub href: Url,
+    #[serde(deserialize_with = "deserialize_optional_url")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub href: Option<Url>,
 }
 
 impl Diagnostic {
