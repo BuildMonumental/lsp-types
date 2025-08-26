@@ -40,6 +40,13 @@ mod lsp_url {
     {
         // Get the URL string and ensure brackets are properly encoded
         let url_str = url.as_str();
+        
+        // Fast path: if no brackets, serialize directly without allocation
+        if !url_str.contains('[') && !url_str.contains(']') {
+            return serializer.serialize_str(url_str);
+        }
+        
+        // Slow path: encode brackets
         let encoded_url = encode_brackets_in_url(url_str);
         serializer.serialize_str(&encoded_url)
     }
@@ -55,10 +62,25 @@ mod lsp_url {
 
     /// Encode brackets in URL string for LSP compatibility
     pub(crate) fn encode_brackets_in_url(url_str: &str) -> String {
-        // Simple replacement approach - safer than character-by-character parsing
-        url_str
-            .replace('[', "%5B")
-            .replace(']', "%5D")
+        // Check if we need to do any work first
+        if !url_str.contains('[') && !url_str.contains(']') {
+            return url_str.to_string();
+        }
+        
+        // Single pass through the string, pre-allocate capacity
+        // Count brackets to calculate exact capacity needed: each bracket adds 2 extra chars
+        let bracket_count = url_str.chars().filter(|&c| c == '[' || c == ']').count();
+        let mut result = String::with_capacity(url_str.len() + bracket_count * 2);
+        
+        for ch in url_str.chars() {
+            match ch {
+                '[' => result.push_str("%5B"),
+                ']' => result.push_str("%5D"),
+                _ => result.push(ch),
+            }
+        }
+        
+        result
     }
 
     #[cfg(test)]
@@ -67,19 +89,38 @@ mod lsp_url {
 
         #[test]
         fn test_encode_brackets_in_url() {
+            // Test basic bracket encoding
             assert_eq!(
                 encode_brackets_in_url("file:///test/[slug].tsx"),
                 "file:///test/%5Bslug%5D.tsx"
             );
             
+            // Test already encoded brackets (should not double-encode)
             assert_eq!(
                 encode_brackets_in_url("file:///test/%5Bslug%5D.tsx"),
                 "file:///test/%5Bslug%5D.tsx"
             );
             
+            // Test multiple brackets
             assert_eq!(
                 encode_brackets_in_url("file:///test/[[...slug]].tsx"),
                 "file:///test/%5B%5B...slug%5D%5D.tsx"
+            );
+            
+            // Test no brackets (should return equivalent string)
+            let no_brackets = "file:///test/normal.tsx";
+            assert_eq!(encode_brackets_in_url(no_brackets), no_brackets);
+            
+            // Test empty string
+            assert_eq!(encode_brackets_in_url(""), "");
+            
+            // Test only brackets
+            assert_eq!(encode_brackets_in_url("[]"), "%5B%5D");
+            
+            // Test many brackets (stress test)
+            assert_eq!(
+                encode_brackets_in_url("file:///[a]/[b]/[c]/[d]/[e].tsx"),
+                "file:///%5Ba%5D/%5Bb%5D/%5Bc%5D/%5Bd%5D/%5Be%5D.tsx"
             );
         }
     }
