@@ -28,6 +28,63 @@ use serde::{
 use serde_json::Value;
 pub use url::Url;
 
+/// Custom serialization/deserialization for URLs that ensures brackets are percent-encoded
+mod lsp_url {
+    use serde::{de, Deserialize, Deserializer, Serializer};
+    use url::Url;
+
+    /// Serialize URL ensuring brackets are percent-encoded for LSP compatibility
+    pub fn serialize<S>(url: &Url, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Get the URL string and ensure brackets are properly encoded
+        let url_str = url.as_str();
+        let encoded_url = encode_brackets_in_url(url_str);
+        serializer.serialize_str(&encoded_url)
+    }
+
+    /// Deserialize URL from string
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Url, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let url_str = String::deserialize(deserializer)?;
+        Url::parse(&url_str).map_err(de::Error::custom)
+    }
+
+    /// Encode brackets in URL string for LSP compatibility
+    pub(crate) fn encode_brackets_in_url(url_str: &str) -> String {
+        // Simple replacement approach - safer than character-by-character parsing
+        url_str
+            .replace('[', "%5B")
+            .replace(']', "%5D")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_encode_brackets_in_url() {
+            assert_eq!(
+                encode_brackets_in_url("file:///test/[slug].tsx"),
+                "file:///test/%5Bslug%5D.tsx"
+            );
+            
+            assert_eq!(
+                encode_brackets_in_url("file:///test/%5Bslug%5D.tsx"),
+                "file:///test/%5Bslug%5D.tsx"
+            );
+            
+            assert_eq!(
+                encode_brackets_in_url("file:///test/[[...slug]].tsx"),
+                "file:///test/%5B%5B...slug%5D%5D.tsx"
+            );
+        }
+    }
+}
+
 // Large enough to contain any enumeration name defined in this crate
 type PascalCaseBuf = [u8; 32];
 const fn fmt_pascal_case_const(name: &str) -> (PascalCaseBuf, usize) {
@@ -303,6 +360,7 @@ impl Range {
 /// Represents a location inside a resource, such as a line inside a text file.
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize, Hash)]
 pub struct Location {
+    #[serde(with = "lsp_url")]
     pub uri: Url,
     pub range: Range,
 }
@@ -325,6 +383,7 @@ pub struct LocationLink {
     pub origin_selection_range: Option<Range>,
 
     /// The target resource identifier of this link.
+    #[serde(with = "lsp_url")]
     pub target_uri: Url,
 
     /// The full target range of this link.
@@ -719,6 +778,7 @@ pub struct CreateFileOptions {
 #[serde(rename_all = "camelCase")]
 pub struct CreateFile {
     /// The resource to create.
+    #[serde(with = "lsp_url")]
     pub uri: Url,
     /// Additional options
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -748,8 +808,10 @@ pub struct RenameFileOptions {
 #[serde(rename_all = "camelCase")]
 pub struct RenameFile {
     /// The old (existing) location.
+    #[serde(with = "lsp_url")]
     pub old_uri: Url,
     /// The new location.
+    #[serde(with = "lsp_url")]
     pub new_uri: Url,
     /// Rename options.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -785,6 +847,7 @@ pub struct DeleteFileOptions {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFile {
     /// The file to delete.
+    #[serde(with = "lsp_url")]
     pub uri: Url,
     /// Delete options.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -994,7 +1057,9 @@ mod url_map {
             Some(ref changes) => {
                 let mut map = serializer.serialize_map(Some(changes.len()))?;
                 for (k, v) in changes {
-                    map.serialize_entry(k.as_str(), v)?;
+                    // Ensure brackets are encoded for LSP compatibility
+                    let encoded_url = lsp_url::encode_brackets_in_url(k.as_str());
+                    map.serialize_entry(&encoded_url, v)?;
                 }
                 map.end()
             }
@@ -1021,6 +1086,7 @@ pub struct TextDocumentIdentifier {
     // This modelled by "mixing-in" TextDocumentIdentifier in VersionedTextDocumentIdentifier,
     // so any changes to this type must be effected in the sub-type as well.
     /// The text document's URI.
+    #[serde(with = "lsp_url")]
     pub uri: Url,
 }
 
@@ -1035,6 +1101,7 @@ impl TextDocumentIdentifier {
 #[serde(rename_all = "camelCase")]
 pub struct TextDocumentItem {
     /// The text document's URI.
+    #[serde(with = "lsp_url")]
     pub uri: Url,
 
     /// The text document's language identifier.
@@ -1064,6 +1131,7 @@ impl TextDocumentItem {
 pub struct VersionedTextDocumentIdentifier {
     // This field was "mixed-in" from TextDocumentIdentifier
     /// The text document's URI.
+    #[serde(with = "lsp_url")]
     pub uri: Url,
 
     /// The version number of this document.
@@ -1084,6 +1152,7 @@ impl VersionedTextDocumentIdentifier {
 pub struct OptionalVersionedTextDocumentIdentifier {
     // This field was "mixed-in" from TextDocumentIdentifier
     /// The text document's URI.
+    #[serde(with = "lsp_url")]
     pub uri: Url,
 
     /// The version number of this document. If an optional versioned text document
