@@ -61,13 +61,8 @@ mod lsp_url {
     }
 
     /// Encode brackets in URL string for LSP compatibility
+    /// Note: This assumes the string contains brackets (caller should check first)
     pub(crate) fn encode_brackets_in_url(url_str: &str) -> String {
-        // Check if we need to do any work first
-        if !url_str.contains('[') && !url_str.contains(']') {
-            return url_str.to_string();
-        }
-        
-        // Single pass through the string, pre-allocate capacity
         // Count brackets to calculate exact capacity needed: each bracket adds 2 extra chars
         let bracket_count = url_str.chars().filter(|&c| c == '[' || c == ']').count();
         let mut result = String::with_capacity(url_str.len() + bracket_count * 2);
