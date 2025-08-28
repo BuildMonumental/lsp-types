@@ -12,6 +12,9 @@ URIs, But on the modern/new meaning of URLs, they are the same as
 URIs.  The important take-away aspect is that the URL crate should be
 able to parse any URI, such as `urn:isbn:0451450523`.
 
+The URL crate is wrapped by Uri. Primarily to percent encode brackets to
+better fit the LSP specification.
+
 
 */
 #![allow(non_upper_case_globals)]
@@ -19,107 +22,16 @@ able to parse any URI, such as `urn:isbn:0451450523`.
 #[macro_use]
 extern crate bitflags;
 
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
 use serde::{
     de::{self, Error as Error_},
     Deserialize, Deserializer, Serialize,
 };
 use serde_json::Value;
-pub use url::Url;
 
-/// Custom serialization/deserialization for URLs that ensures brackets are percent-encoded
-mod lsp_url {
-    use serde::{de, Deserialize, Deserializer, Serializer};
-    use url::Url;
-
-    /// Serialize URL ensuring brackets are percent-encoded for LSP compatibility
-    pub fn serialize<S>(url: &Url, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Get the URL string and ensure brackets are properly encoded
-        let url_str = url.as_str();
-        
-        // Fast path: if no brackets, serialize directly without allocation
-        if !url_str.contains('[') && !url_str.contains(']') {
-            return serializer.serialize_str(url_str);
-        }
-        
-        // Slow path: encode brackets
-        let encoded_url = encode_brackets_in_url(url_str);
-        serializer.serialize_str(&encoded_url)
-    }
-
-    /// Deserialize URL from string
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Url, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let url_str = String::deserialize(deserializer)?;
-        Url::parse(&url_str).map_err(de::Error::custom)
-    }
-
-    /// Encode brackets in URL string for LSP compatibility
-    /// Note: This assumes the string contains brackets (caller should check first)
-    pub(crate) fn encode_brackets_in_url(url_str: &str) -> String {
-        // Count brackets to calculate exact capacity needed: each bracket adds 2 extra chars
-        let bracket_count = url_str.chars().filter(|&c| c == '[' || c == ']').count();
-        let mut result = String::with_capacity(url_str.len() + bracket_count * 2);
-        
-        for ch in url_str.chars() {
-            match ch {
-                '[' => result.push_str("%5B"),
-                ']' => result.push_str("%5D"),
-                _ => result.push(ch),
-            }
-        }
-        
-        result
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn test_encode_brackets_in_url() {
-            // Test basic bracket encoding
-            assert_eq!(
-                encode_brackets_in_url("file:///test/[slug].tsx"),
-                "file:///test/%5Bslug%5D.tsx"
-            );
-            
-            // Test already encoded brackets (should not double-encode)
-            assert_eq!(
-                encode_brackets_in_url("file:///test/%5Bslug%5D.tsx"),
-                "file:///test/%5Bslug%5D.tsx"
-            );
-            
-            // Test multiple brackets
-            assert_eq!(
-                encode_brackets_in_url("file:///test/[[...slug]].tsx"),
-                "file:///test/%5B%5B...slug%5D%5D.tsx"
-            );
-            
-            // Test no brackets (should return equivalent string)
-            let no_brackets = "file:///test/normal.tsx";
-            assert_eq!(encode_brackets_in_url(no_brackets), no_brackets);
-            
-            // Test empty string
-            assert_eq!(encode_brackets_in_url(""), "");
-            
-            // Test only brackets
-            assert_eq!(encode_brackets_in_url("[]"), "%5B%5D");
-            
-            // Test many brackets (stress test)
-            assert_eq!(
-                encode_brackets_in_url("file:///[a]/[b]/[c]/[d]/[e].tsx"),
-                "file:///%5Ba%5D/%5Bb%5D/%5Bc%5D/%5Bd%5D/%5Be%5D.tsx"
-            );
-        }
-    }
-}
+mod uri;
+pub use uri::Uri;
 
 // Large enough to contain any enumeration name defined in this crate
 type PascalCaseBuf = [u8; 32];
@@ -396,13 +308,12 @@ impl Range {
 /// Represents a location inside a resource, such as a line inside a text file.
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize, Hash)]
 pub struct Location {
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
     pub range: Range,
 }
 
 impl Location {
-    pub fn new(uri: Url, range: Range) -> Location {
+    pub fn new(uri: Uri, range: Range) -> Location {
         Location { uri, range }
     }
 }
@@ -419,8 +330,7 @@ pub struct LocationLink {
     pub origin_selection_range: Option<Range>,
 
     /// The target resource identifier of this link.
-    #[serde(with = "lsp_url")]
-    pub target_uri: Url,
+    pub target_uri: Uri,
 
     /// The full target range of this link.
     pub target_range: Range,
@@ -522,14 +432,16 @@ pub struct Diagnostic {
     pub data: Option<serde_json::Value>,
 }
 
-fn deserialize_optional_url<'de, D>(deserializer: D) -> Result<Option<Url>, D::Error>
+fn deserialize_optional_uri<'de, D>(deserializer: D) -> Result<Option<Uri>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let opt = Option::<String>::deserialize(deserializer)?;
     match opt {
         Some(s) if s.is_empty() => Ok(None),
-        Some(s) => Url::parse(&s).map(Some).map_err(serde::de::Error::custom),
+        Some(s) => Uri::from_str(&s)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
         None => Ok(None),
     }
 }
@@ -537,9 +449,9 @@ where
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeDescription {
-    #[serde(deserialize_with = "deserialize_optional_url")]
+    #[serde(deserialize_with = "deserialize_optional_uri")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub href: Option<Url>,
+    pub href: Option<Uri>,
 }
 
 impl Diagnostic {
@@ -814,8 +726,7 @@ pub struct CreateFileOptions {
 #[serde(rename_all = "camelCase")]
 pub struct CreateFile {
     /// The resource to create.
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
     /// Additional options
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<CreateFileOptions>,
@@ -844,11 +755,9 @@ pub struct RenameFileOptions {
 #[serde(rename_all = "camelCase")]
 pub struct RenameFile {
     /// The old (existing) location.
-    #[serde(with = "lsp_url")]
-    pub old_uri: Url,
+    pub old_uri: Uri,
     /// The new location.
-    #[serde(with = "lsp_url")]
-    pub new_uri: Url,
+    pub new_uri: Uri,
     /// Rename options.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<RenameFileOptions>,
@@ -883,8 +792,7 @@ pub struct DeleteFileOptions {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteFile {
     /// The file to delete.
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
     /// Delete options.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<DeleteFileOptions>,
@@ -901,7 +809,7 @@ pub struct WorkspaceEdit {
     #[serde(with = "url_map")]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
-    pub changes: Option<HashMap<Url, Vec<TextEdit>>>, //    changes?: { [uri: string]: TextEdit[]; };
+    pub changes: Option<HashMap<Uri, Vec<TextEdit>>>, //    changes?: { [uri: string]: TextEdit[]; };
 
     /// Depending on the client capability `workspace.workspaceEdit.resourceOperations` document changes
     /// are either an array of `TextDocumentEdit`s to express changes to n different text documents
@@ -978,7 +886,7 @@ pub struct ConfigurationParams {
 pub struct ConfigurationItem {
     /// The scope to get the configuration section for.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope_uri: Option<Url>,
+    pub scope_uri: Option<Uri>,
 
     ///The configuration section asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -991,7 +899,7 @@ mod url_map {
 
     use super::*;
 
-    pub fn deserialize<'de, D, V>(deserializer: D) -> Result<Option<HashMap<Url, V>>, D::Error>
+    pub fn deserialize<'de, D, V>(deserializer: D) -> Result<Option<HashMap<Uri, V>>, D::Error>
     where
         D: serde::Deserializer<'de>,
         V: de::DeserializeOwned,
@@ -1008,7 +916,7 @@ mod url_map {
             }
         }
         impl<'de, V: de::DeserializeOwned> de::Visitor<'de> for UrlMapVisitor<V> {
-            type Value = HashMap<Url, V>;
+            type Value = HashMap<Uri, V>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("map")
@@ -1022,7 +930,7 @@ mod url_map {
 
                 // While there are entries remaining in the input, add them
                 // into our map.
-                while let Some((key, value)) = visitor.next_entry::<Url, _>()? {
+                while let Some((key, value)) = visitor.next_entry::<Uri, _>()? {
                     values.insert(key, value);
                 }
 
@@ -1041,7 +949,7 @@ mod url_map {
             }
         }
         impl<'de, V: de::DeserializeOwned> de::Visitor<'de> for OptionUrlMapVisitor<V> {
-            type Value = Option<HashMap<Url, V>>;
+            type Value = Option<HashMap<Uri, V>>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("option")
@@ -1080,7 +988,7 @@ mod url_map {
     }
 
     pub fn serialize<S, V>(
-        changes: &Option<HashMap<Url, V>>,
+        changes: &Option<HashMap<Uri, V>>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -1093,9 +1001,7 @@ mod url_map {
             Some(ref changes) => {
                 let mut map = serializer.serialize_map(Some(changes.len()))?;
                 for (k, v) in changes {
-                    // Ensure brackets are encoded for LSP compatibility
-                    let encoded_url = lsp_url::encode_brackets_in_url(k.as_str());
-                    map.serialize_entry(&encoded_url, v)?;
+                    map.serialize_entry(k, v)?;
                 }
                 map.end()
             }
@@ -1105,7 +1011,7 @@ mod url_map {
 }
 
 impl WorkspaceEdit {
-    pub fn new(changes: HashMap<Url, Vec<TextEdit>>) -> WorkspaceEdit {
+    pub fn new(changes: HashMap<Uri, Vec<TextEdit>>) -> WorkspaceEdit {
         WorkspaceEdit {
             changes: Some(changes),
             document_changes: None,
@@ -1122,12 +1028,11 @@ pub struct TextDocumentIdentifier {
     // This modelled by "mixing-in" TextDocumentIdentifier in VersionedTextDocumentIdentifier,
     // so any changes to this type must be effected in the sub-type as well.
     /// The text document's URI.
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
 }
 
 impl TextDocumentIdentifier {
-    pub fn new(uri: Url) -> TextDocumentIdentifier {
+    pub fn new(uri: Uri) -> TextDocumentIdentifier {
         TextDocumentIdentifier { uri }
     }
 }
@@ -1137,8 +1042,7 @@ impl TextDocumentIdentifier {
 #[serde(rename_all = "camelCase")]
 pub struct TextDocumentItem {
     /// The text document's URI.
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
 
     /// The text document's language identifier.
     pub language_id: String,
@@ -1152,7 +1056,7 @@ pub struct TextDocumentItem {
 }
 
 impl TextDocumentItem {
-    pub fn new(uri: Url, language_id: String, version: i32, text: String) -> TextDocumentItem {
+    pub fn new(uri: Uri, language_id: String, version: i32, text: String) -> TextDocumentItem {
         TextDocumentItem {
             uri,
             language_id,
@@ -1167,8 +1071,7 @@ impl TextDocumentItem {
 pub struct VersionedTextDocumentIdentifier {
     // This field was "mixed-in" from TextDocumentIdentifier
     /// The text document's URI.
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
 
     /// The version number of this document.
     ///
@@ -1178,7 +1081,7 @@ pub struct VersionedTextDocumentIdentifier {
 }
 
 impl VersionedTextDocumentIdentifier {
-    pub fn new(uri: Url, version: i32) -> VersionedTextDocumentIdentifier {
+    pub fn new(uri: Uri, version: i32) -> VersionedTextDocumentIdentifier {
         VersionedTextDocumentIdentifier { uri, version }
     }
 }
@@ -1188,8 +1091,7 @@ impl VersionedTextDocumentIdentifier {
 pub struct OptionalVersionedTextDocumentIdentifier {
     // This field was "mixed-in" from TextDocumentIdentifier
     /// The text document's URI.
-    #[serde(with = "lsp_url")]
-    pub uri: Url,
+    pub uri: Uri,
 
     /// The version number of this document. If an optional versioned text document
     /// identifier is sent from the server to the client and the file is not
@@ -1204,7 +1106,7 @@ pub struct OptionalVersionedTextDocumentIdentifier {
 }
 
 impl OptionalVersionedTextDocumentIdentifier {
-    pub fn new(uri: Url, version: i32) -> OptionalVersionedTextDocumentIdentifier {
+    pub fn new(uri: Uri, version: i32) -> OptionalVersionedTextDocumentIdentifier {
         OptionalVersionedTextDocumentIdentifier {
             uri,
             version: Some(version),
@@ -1284,7 +1186,7 @@ pub struct InitializeParams {
     /// `rootUri` wins.
     #[serde(default)]
     #[deprecated(note = "Use `workspace_folders` instead when possible")]
-    pub root_uri: Option<Url>,
+    pub root_uri: Option<Uri>,
 
     /// User provided initialization options.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2608,7 +2510,7 @@ impl FileChangeType {
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct FileEvent {
     /// The file's URI.
-    pub uri: Url,
+    pub uri: Uri,
 
     /// The change type.
     #[serde(rename = "type")]
@@ -2616,7 +2518,7 @@ pub struct FileEvent {
 }
 
 impl FileEvent {
-    pub fn new(uri: Url, typ: FileChangeType) -> FileEvent {
+    pub fn new(uri: Uri, typ: FileChangeType) -> FileEvent {
         FileEvent { uri, typ }
     }
 }
@@ -2677,7 +2579,7 @@ impl From<RelativePattern> for GlobPattern {
 pub struct RelativePattern {
     /// A workspace folder or a base URI to which this pattern will be matched
     /// against relatively.
-    pub base_uri: OneOf<WorkspaceFolder, Url>,
+    pub base_uri: OneOf<WorkspaceFolder, Uri>,
 
     /// The actual glob pattern.
     pub pattern: Pattern,
@@ -2734,7 +2636,7 @@ impl serde::Serialize for WatchKind {
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct PublishDiagnosticsParams {
     /// The URI for which diagnostic information is reported.
-    pub uri: Url,
+    pub uri: Uri,
 
     /// An array of diagnostic information items.
     pub diagnostics: Vec<Diagnostic>,
@@ -2746,7 +2648,7 @@ pub struct PublishDiagnosticsParams {
 
 impl PublishDiagnosticsParams {
     pub fn new(
-        uri: Url,
+        uri: Uri,
         diagnostics: Vec<Diagnostic>,
         version: Option<i32>,
     ) -> PublishDiagnosticsParams {
@@ -3026,6 +2928,8 @@ mod tests {
 
     #[test]
     fn workspace_edit() {
+        use std::str::FromStr;
+
         test_serialization(
             &WorkspaceEdit {
                 changes: Some(vec![].into_iter().collect()),
@@ -3047,7 +2951,7 @@ mod tests {
         test_serialization(
             &WorkspaceEdit {
                 changes: Some(
-                    vec![(Url::parse("file://test").unwrap(), vec![])]
+                    vec![(Uri::from_str("file://test").unwrap(), vec![])]
                         .into_iter()
                         .collect(),
                 ),
