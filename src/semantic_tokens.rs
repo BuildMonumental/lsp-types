@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -142,92 +141,6 @@ pub struct SemanticTokensLegend {
     pub token_modifiers: Vec<SemanticTokenModifier>,
 }
 
-/// The actual tokens.
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Default)]
-pub struct SemanticToken {
-    pub delta_line: u32,
-    pub delta_start: u32,
-    pub length: u32,
-    pub token_type: u32,
-    pub token_modifiers_bitset: u32,
-}
-
-impl SemanticToken {
-    fn deserialize_tokens<'de, D>(deserializer: D) -> Result<Vec<SemanticToken>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let data = Vec::<u32>::deserialize(deserializer)?;
-        let chunks = data.chunks_exact(5);
-
-        if !chunks.remainder().is_empty() {
-            return Result::Err(serde::de::Error::custom("Length is not divisible by 5"));
-        }
-
-        Result::Ok(
-            chunks
-                .map(|chunk| SemanticToken {
-                    delta_line: chunk[0],
-                    delta_start: chunk[1],
-                    length: chunk[2],
-                    token_type: chunk[3],
-                    token_modifiers_bitset: chunk[4],
-                })
-                .collect(),
-        )
-    }
-
-    fn serialize_tokens<S>(tokens: &[SemanticToken], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(tokens.len() * 5))?;
-        for token in tokens.iter() {
-            seq.serialize_element(&token.delta_line)?;
-            seq.serialize_element(&token.delta_start)?;
-            seq.serialize_element(&token.length)?;
-            seq.serialize_element(&token.token_type)?;
-            seq.serialize_element(&token.token_modifiers_bitset)?;
-        }
-        seq.end()
-    }
-
-    fn deserialize_tokens_opt<'de, D>(
-        deserializer: D,
-    ) -> Result<Option<Vec<SemanticToken>>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(transparent)]
-        struct Wrapper {
-            #[serde(deserialize_with = "SemanticToken::deserialize_tokens")]
-            tokens: Vec<SemanticToken>,
-        }
-
-        Ok(Option::<Wrapper>::deserialize(deserializer)?.map(|wrapper| wrapper.tokens))
-    }
-
-    fn serialize_tokens_opt<S>(
-        data: &Option<Vec<SemanticToken>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        #[derive(Serialize)]
-        #[serde(transparent)]
-        struct Wrapper {
-            #[serde(serialize_with = "SemanticToken::serialize_tokens")]
-            tokens: Vec<SemanticToken>,
-        }
-
-        let opt = data.as_ref().map(|t| Wrapper { tokens: t.to_vec() });
-
-        opt.serialize(serializer)
-    }
-}
-
 /// @since 3.16.0
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -242,22 +155,14 @@ pub struct SemanticTokens {
     /// The actual tokens. For a detailed description about how the data is
     /// structured please see
     /// <https://github.com/microsoft/vscode-extension-samples/blob/5ae1f7787122812dcc84e37427ca90af5ee09f14/semantic-tokens-sample/vscode.proposed.d.ts#L71>
-    #[serde(
-        deserialize_with = "SemanticToken::deserialize_tokens",
-        serialize_with = "SemanticToken::serialize_tokens"
-    )]
-    pub data: Vec<SemanticToken>,
+    pub data: Vec<u32>,
 }
 
 /// @since 3.16.0
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticTokensPartialResult {
-    #[serde(
-        deserialize_with = "SemanticToken::deserialize_tokens",
-        serialize_with = "SemanticToken::serialize_tokens"
-    )]
-    pub data: Vec<SemanticToken>,
+    pub data: Vec<u32>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -287,13 +192,8 @@ pub struct SemanticTokensEdit {
     pub start: u32,
     pub delete_count: u32,
 
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "SemanticToken::deserialize_tokens_opt",
-        serialize_with = "SemanticToken::serialize_tokens_opt"
-    )]
-    pub data: Option<Vec<SemanticToken>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -565,13 +465,7 @@ mod tests {
         test_serialization(
             &SemanticTokens {
                 result_id: None,
-                data: vec![SemanticToken {
-                    delta_line: 2,
-                    delta_start: 5,
-                    length: 3,
-                    token_type: 0,
-                    token_modifiers_bitset: 3,
-                }],
+                data: vec![2, 5, 3, 0, 3],
             },
             r#"{"data":[2,5,3,0,3]}"#,
         );
@@ -579,22 +473,7 @@ mod tests {
         test_serialization(
             &SemanticTokens {
                 result_id: None,
-                data: vec![
-                    SemanticToken {
-                        delta_line: 2,
-                        delta_start: 5,
-                        length: 3,
-                        token_type: 0,
-                        token_modifiers_bitset: 3,
-                    },
-                    SemanticToken {
-                        delta_line: 0,
-                        delta_start: 5,
-                        length: 4,
-                        token_type: 1,
-                        token_modifiers_bitset: 0,
-                    },
-                ],
+                data: vec![2, 5, 3, 0, 3, 0, 5, 4, 1, 0],
             },
             r#"{"data":[2,5,3,0,3,0,5,4,1,0]}"#,
         );
@@ -614,13 +493,7 @@ mod tests {
             r#"{"data":[2,5,3,0,3]}"#,
             &SemanticTokens {
                 result_id: None,
-                data: vec![SemanticToken {
-                    delta_line: 2,
-                    delta_start: 5,
-                    length: 3,
-                    token_type: 0,
-                    token_modifiers_bitset: 3,
-                }],
+                data: vec![2, 5, 3, 0, 3],
             },
         );
 
@@ -628,22 +501,7 @@ mod tests {
             r#"{"data":[2,5,3,0,3,0,5,4,1,0]}"#,
             &SemanticTokens {
                 result_id: None,
-                data: vec![
-                    SemanticToken {
-                        delta_line: 2,
-                        delta_start: 5,
-                        length: 3,
-                        token_type: 0,
-                        token_modifiers_bitset: 3,
-                    },
-                    SemanticToken {
-                        delta_line: 0,
-                        delta_start: 5,
-                        length: 4,
-                        token_type: 1,
-                        token_modifiers_bitset: 0,
-                    },
-                ],
+                data: vec![2, 5, 3, 0, 3, 0, 5, 4, 1, 0],
             },
         );
     }
@@ -663,34 +521,28 @@ mod tests {
     #[test]
     fn test_semantic_tokens_edit_support_deserialization() {
         test_deserialization(
-            r#"{"start":0,"deleteCount":1,"data":[2,5,3,0,3,0,5,4,1,0]}"#,
+            r#"{"start":0,"deleteCount":1,"data":[2]}"#,
             &SemanticTokensEdit {
                 start: 0,
                 delete_count: 1,
-                data: Some(vec![
-                    SemanticToken {
-                        delta_line: 2,
-                        delta_start: 5,
-                        length: 3,
-                        token_type: 0,
-                        token_modifiers_bitset: 3,
-                    },
-                    SemanticToken {
-                        delta_line: 0,
-                        delta_start: 5,
-                        length: 4,
-                        token_type: 1,
-                        token_modifiers_bitset: 0,
-                    },
-                ]),
+                data: Some(vec![2]),
             },
         );
 
         test_deserialization(
-            r#"{"start":0,"deleteCount":1}"#,
+            r#"{"start":0,"deleteCount":3,"data":[2,5,1]}"#,
             &SemanticTokensEdit {
                 start: 0,
-                delete_count: 1,
+                delete_count: 3,
+                data: Some(vec![2, 5, 1]),
+            },
+        );
+
+        test_deserialization(
+            r#"{"start":0,"deleteCount":5}"#,
+            &SemanticTokensEdit {
+                start: 0,
+                delete_count: 5,
                 data: None,
             },
         );
@@ -702,33 +554,27 @@ mod tests {
             &SemanticTokensEdit {
                 start: 0,
                 delete_count: 1,
-                data: Some(vec![
-                    SemanticToken {
-                        delta_line: 2,
-                        delta_start: 5,
-                        length: 3,
-                        token_type: 0,
-                        token_modifiers_bitset: 3,
-                    },
-                    SemanticToken {
-                        delta_line: 0,
-                        delta_start: 5,
-                        length: 4,
-                        token_type: 1,
-                        token_modifiers_bitset: 0,
-                    },
-                ]),
+                data: Some(vec![2]),
             },
-            r#"{"start":0,"deleteCount":1,"data":[2,5,3,0,3,0,5,4,1,0]}"#,
+            r#"{"start":0,"deleteCount":1,"data":[2]}"#,
         );
 
         test_serialization(
             &SemanticTokensEdit {
                 start: 0,
-                delete_count: 1,
+                delete_count: 3,
+                data: Some(vec![2, 5, 1]),
+            },
+            r#"{"start":0,"deleteCount":3,"data":[2,5,1]}"#,
+        );
+
+        test_serialization(
+            &SemanticTokensEdit {
+                start: 0,
+                delete_count: 5,
                 data: None,
             },
-            r#"{"start":0,"deleteCount":1}"#,
+            r#"{"start":0,"deleteCount":5}"#,
         );
     }
 }
