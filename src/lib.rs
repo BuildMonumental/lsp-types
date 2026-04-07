@@ -1392,6 +1392,7 @@ pub struct SymbolKindCapability {
     /// If this property is not present the client only supports
     /// the symbol kinds from `File` to `Array` as defined in
     /// the initial version of the protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_set: Option<Vec<SymbolKind>>,
 }
 

@@ -378,6 +378,7 @@ pub struct SemanticTokensWorkspaceClientCapabilities {
     /// semantic tokens currently shown. It should be used with absolute care
     /// and is useful for situation where a server for example detect a project
     /// wide change that requires such a calculation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_support: Option<bool>,
 }
 

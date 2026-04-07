@@ -83,6 +83,7 @@ pub struct FileOperationRegistrationOptions {
 #[serde(rename_all = "camelCase")]
 pub struct FileOperationFilter {
     /// A Uri like `file` or `untitled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheme: Option<String>,
 
     /// The actual file operation pattern.
